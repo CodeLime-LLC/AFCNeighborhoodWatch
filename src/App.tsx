@@ -1,22 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
-import Layout from './components/Layout'
 import LoginPage from './components/LoginPage'
-import Dashboard from './components/Dashboard'
-import SettingsPage from './components/SettingsPage'
+import MainPage from './components/MainPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { authenticated } = useAuth()
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-gray-500">Loading...</p>
-      </div>
-    )
-  }
-
-  if (!user) {
+  if (!authenticated) {
     return <Navigate to="/login" replace />
   }
 
@@ -32,13 +22,10 @@ function App() {
           path="/"
           element={
             <ProtectedRoute>
-              <Layout />
+              <MainPage />
             </ProtectedRoute>
           }
-        >
-          <Route index element={<Dashboard />} />
-          <Route path="settings" element={<SettingsPage />} />
-        </Route>
+        />
       </Routes>
     </BrowserRouter>
   )

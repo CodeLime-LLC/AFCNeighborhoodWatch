@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { defineSecret } from "firebase-functions/params";
 import * as admin from "firebase-admin";
 import {
   fetchCsv,
@@ -10,10 +11,17 @@ import {
   getYearsToFetch,
 } from "./fetchSales";
 import { geocodeAddress, batchGeocode, haversineDistanceMiles } from "./geocode";
+import { buildReportHtml, sendReportEmail } from "./email";
 import { ChurchConfig, ProcessResult } from "./types";
 
 admin.initializeApp();
 const db = admin.firestore();
+
+const SMTP_USER = defineSecret("SMTP_USER");
+const SMTP_PASS = defineSecret("SMTP_PASS");
+
+const CHURCH_LAT = 41.7322;
+const CHURCH_LON = -93.6295;
 
 /**
  * Core pipeline: fetch CSV, parse, geocode, store.
@@ -25,12 +33,9 @@ async function runPipeline(): Promise<ProcessResult> {
   // 1. Load church config
   const configSnap = await db.doc("config/church").get();
   if (!configSnap.exists) {
-    throw new HttpsError("not-found", "Church config not found. Please configure settings first.");
+    throw new HttpsError("not-found", "Church config not found.");
   }
   const config = configSnap.data() as ChurchConfig;
-  if (!config.lat || !config.lon) {
-    throw new HttpsError("failed-precondition", "Church address not geocoded. Please geocode in settings.");
-  }
 
   // 2. Determine date range and years to fetch
   const cutoffDate = new Date();
@@ -89,8 +94,8 @@ async function runPipeline(): Promise<ProcessResult> {
       newRecords[i].lon = result.lon;
       newRecords[i].geocodeStatus = "matched";
       newRecords[i].distanceMiles = haversineDistanceMiles(
-        config.lat,
-        config.lon,
+        CHURCH_LAT,
+        CHURCH_LON,
         result.lat,
         result.lon
       );
@@ -117,7 +122,7 @@ async function runPipeline(): Promise<ProcessResult> {
     console.log(`Wrote batch ${Math.floor(i / BATCH_SIZE) + 1} (${chunk.length} records)`);
   }
 
-  // 8. Count total in radius (simple count, no composite index needed)
+  // 8. Count total in radius
   let totalInRadius = 0;
   try {
     const recentSalesSnap = await db
@@ -169,10 +174,7 @@ export const processSales = onCall(
     timeoutSeconds: 540,
     memory: "512MiB",
   },
-  async (request) => {
-    if (!request.auth) {
-      throw new HttpsError("unauthenticated", "Must be signed in.");
-    }
+  async () => {
     return runPipeline();
   }
 );
@@ -182,9 +184,6 @@ export const processSales = onCall(
  */
 export const geocodeAddressFn = onCall(
   async (request) => {
-    if (!request.auth) {
-      throw new HttpsError("unauthenticated", "Must be signed in.");
-    }
     const { address } = request.data as { address: string };
     if (!address) {
       throw new HttpsError("invalid-argument", "Address is required.");
@@ -200,24 +199,142 @@ export const geocodeAddressFn = onCall(
 );
 
 /**
- * Scheduled monthly run — 1st of each month at 6 AM Central.
+ * Send a test email — callable from the frontend.
  */
-export const scheduledProcessSales = onSchedule(
+export const sendTestEmail = onCall(
   {
-    schedule: "0 6 1 * *",
+    secrets: [SMTP_USER, SMTP_PASS],
+    timeoutSeconds: 30,
+  },
+  async (request) => {
+    const { recipientEmail } = request.data as { recipientEmail: string };
+    if (!recipientEmail) {
+      throw new HttpsError("invalid-argument", "Recipient email is required.");
+    }
+
+    const html = buildReportHtml([], 3, 1);
+    await sendReportEmail(
+      recipientEmail,
+      html,
+      SMTP_USER.value(),
+      SMTP_PASS.value()
+    );
+
+    return { success: true };
+  }
+);
+
+/**
+ * Runs daily at 6 AM Central. Checks email config to decide
+ * whether to fetch data and send a report.
+ *
+ * - Weekly: sends every Monday
+ * - Monthly: sends on the 1st
+ */
+export const scheduledReport = onSchedule(
+  {
+    schedule: "0 6 * * *",
     timeZone: "America/Chicago",
     timeoutSeconds: 540,
     memory: "512MiB",
+    secrets: [SMTP_USER, SMTP_PASS],
   },
   async () => {
+    // 1. Check email config
+    const emailSnap = await db.doc("config/email").get();
+    if (!emailSnap.exists) {
+      console.log("No email config found, skipping.");
+      return;
+    }
+    const emailConfig = emailSnap.data() as {
+      recipientEmail: string;
+      schedule: "weekly" | "monthly" | "quarterly" | "biannual";
+      timeframeMonths: number;
+      radiusMiles: number;
+      enabled: boolean;
+    };
+
+    if (!emailConfig.enabled || !emailConfig.recipientEmail) {
+      console.log("Email reports disabled or no recipient, skipping.");
+      return;
+    }
+
+    // 2. Check if today matches the schedule
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon
+    const dayOfMonth = now.getDate();
+    const month = now.getMonth(); // 0=Jan
+
+    if (emailConfig.schedule === "weekly" && dayOfWeek !== 1) {
+      console.log("Weekly schedule: not Monday, skipping.");
+      return;
+    }
+    if (emailConfig.schedule === "monthly" && dayOfMonth !== 1) {
+      console.log("Monthly schedule: not the 1st, skipping.");
+      return;
+    }
+    if (emailConfig.schedule === "quarterly" && (dayOfMonth !== 1 || month % 3 !== 0)) {
+      console.log("Quarterly schedule: not the 1st of a quarter month, skipping.");
+      return;
+    }
+    if (emailConfig.schedule === "biannual" && (dayOfMonth !== 1 || (month !== 0 && month !== 6))) {
+      console.log("Biannual schedule: not Jan 1 or Jul 1, skipping.");
+      return;
+    }
+
+    console.log(`Schedule matched (${emailConfig.schedule}), running pipeline and sending report.`);
+
+    // 3. Run the data pipeline
     try {
-      const result = await runPipeline();
-      console.log("Scheduled fetch complete:", result);
+      await runPipeline();
     } catch (error) {
-      console.error("Scheduled fetch failed:", error);
-      await db.doc("config/church").update({
-        lastFetchStatus: "error",
-      });
+      console.error("Pipeline failed during scheduled report:", error);
+    }
+
+    // 4. Query sales for the report
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - emailConfig.timeframeMonths);
+
+    const salesSnap = await db
+      .collection("sales")
+      .where("saleDate", ">=", admin.firestore.Timestamp.fromDate(cutoffDate))
+      .orderBy("saleDate", "desc")
+      .get();
+
+    const sales = salesSnap.docs
+      .map((d) => d.data())
+      .filter(
+        (s) =>
+          s.distanceMiles != null &&
+          s.distanceMiles <= emailConfig.radiusMiles
+      )
+      .map((s) => ({
+        buyer: s.buyer as string,
+        address: s.address as string,
+        city: s.city as string,
+        zip: s.zip as string,
+        distanceMiles: s.distanceMiles as number,
+        saleDate: (s.saleDate as admin.firestore.Timestamp).toDate(),
+        price: s.price as number,
+      }));
+
+    // 5. Build and send email
+    const html = buildReportHtml(
+      sales,
+      emailConfig.radiusMiles,
+      emailConfig.timeframeMonths
+    );
+
+    try {
+      await sendReportEmail(
+        emailConfig.recipientEmail,
+        html,
+        SMTP_USER.value(),
+        SMTP_PASS.value()
+      );
+      console.log(`Report sent to ${emailConfig.recipientEmail} with ${sales.length} sales.`);
+    } catch (error) {
+      console.error("Failed to send report email:", error);
     }
   }
 );

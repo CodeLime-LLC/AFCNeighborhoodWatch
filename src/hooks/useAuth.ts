@@ -1,18 +1,20 @@
-import { useState, useEffect } from 'react'
-import { onAuthStateChanged, type User } from 'firebase/auth'
-import { auth } from '../firebase'
+import { useSyncExternalStore } from 'react'
+
+function subscribe(callback: () => void) {
+  window.addEventListener('storage', callback)
+  return () => window.removeEventListener('storage', callback)
+}
+
+function getSnapshot() {
+  return sessionStorage.getItem('authenticated') === 'true'
+}
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const authenticated = useSyncExternalStore(subscribe, getSnapshot)
+  return { authenticated }
+}
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user)
-      setLoading(false)
-    })
-    return unsubscribe
-  }, [])
-
-  return { user, loading }
+export function logout() {
+  sessionStorage.removeItem('authenticated')
+  window.dispatchEvent(new Event('storage'))
 }

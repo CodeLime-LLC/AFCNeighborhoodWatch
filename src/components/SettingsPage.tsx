@@ -123,7 +123,7 @@ export default function SettingsPage() {
           <input
             type="range"
             min={0.5}
-            max={10}
+            max={5}
             step={0.5}
             value={radiusMiles}
             onChange={(e) => setRadiusMiles(Number(e.target.value))}
@@ -131,7 +131,7 @@ export default function SettingsPage() {
           />
           <div className="flex justify-between text-xs text-gray-400">
             <span>0.5 mi</span>
-            <span>10 mi</span>
+            <span>5 mi</span>
           </div>
         </div>
 

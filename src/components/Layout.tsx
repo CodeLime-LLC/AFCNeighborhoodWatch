@@ -1,8 +1,14 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { signOut } from 'firebase/auth'
-import { auth } from '../firebase'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { logout } from '../hooks/useAuth'
 
 export default function Layout() {
+  const navigate = useNavigate()
+
+  function handleSignOut() {
+    logout()
+    navigate('/login')
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white shadow">
@@ -29,7 +35,7 @@ export default function Layout() {
               Settings
             </NavLink>
             <button
-              onClick={() => signOut(auth)}
+              onClick={handleSignOut}
               className="text-sm text-gray-500 hover:text-gray-700"
             >
               Sign Out
