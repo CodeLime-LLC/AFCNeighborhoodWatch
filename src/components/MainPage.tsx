@@ -114,10 +114,14 @@ export default function MainPage() {
     setTestEmailResult(null)
     try {
       const sendTest = httpsCallable<
-        { recipientEmail: string },
+        { recipientEmail: string; timeframeMonths: number; radiusMiles: number },
         { success: boolean }
       >(functions, 'sendTestEmail')
-      await sendTest({ recipientEmail: emailAddress })
+      await sendTest({
+        recipientEmail: emailAddress,
+        timeframeMonths: emailTimeframe,
+        radiusMiles: emailRadius,
+      })
       setTestEmailResult('Test email sent! Check your inbox.')
     } catch {
       setTestEmailResult('Failed to send test email. Check SMTP settings.')
@@ -284,11 +288,11 @@ export default function MainPage() {
                   Send to:
                 </label>
                 <input
-                  type="email"
+                  type="text"
                   value={emailAddress}
                   onChange={(e) => setEmailAddress(e.target.value)}
-                  placeholder="church@example.com"
-                  className="text-sm rounded border border-gray-300 px-2 py-1 w-64 focus:border-blue-500 focus:outline-none"
+                  placeholder="email1@example.com, email2@example.com"
+                  className="text-sm rounded border border-gray-300 px-2 py-1 w-80 focus:border-blue-500 focus:outline-none"
                 />
               </div>
 
@@ -377,6 +381,10 @@ export default function MainPage() {
                 </span>
               )}
             </div>
+
+            <p className="text-xs text-gray-400">
+              Note: Report emails may land in your spam/junk folder. If so, mark the email as "Not Spam" and add schleichertylerd@gmail.com to your contacts to ensure future reports arrive in your inbox.
+            </p>
           </div>
         </div>
       </div>

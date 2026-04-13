@@ -195,17 +195,39 @@ exports.geocodeAddressFn = (0, https_1.onCall)(async (request) => {
 });
 /**
  * Send a test email — callable from the frontend.
+ * Pulls real sales data using the saved email config settings.
  */
 exports.sendTestEmail = (0, https_1.onCall)({
     secrets: [SMTP_USER, SMTP_PASS],
-    timeoutSeconds: 30,
+    timeoutSeconds: 60,
 }, async (request) => {
-    const { recipientEmail } = request.data;
+    const { recipientEmail, timeframeMonths, radiusMiles } = request.data;
     if (!recipientEmail) {
         throw new https_1.HttpsError("invalid-argument", "Recipient email is required.");
     }
-    const html = (0, email_1.buildReportHtml)([], 3, 1);
-    await (0, email_1.sendReportEmail)(recipientEmail, html, SMTP_USER.value(), SMTP_PASS.value());
+    const tfMonths = timeframeMonths ?? 1;
+    const radius = radiusMiles ?? 3;
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - tfMonths);
+    const salesSnap = await db
+        .collection("sales")
+        .where("saleDate", ">=", admin.firestore.Timestamp.fromDate(cutoffDate))
+        .orderBy("saleDate", "desc")
+        .get();
+    const sales = salesSnap.docs
+        .map((d) => d.data())
+        .filter((s) => s.distanceMiles != null && s.distanceMiles <= radius)
+        .map((s) => ({
+        buyer: s.buyer,
+        address: s.address,
+        city: s.city,
+        zip: s.zip,
+        distanceMiles: s.distanceMiles,
+        saleDate: s.saleDate.toDate(),
+    }));
+    const html = (0, email_1.buildReportHtml)(sales, radius, tfMonths);
+    const text = (0, email_1.buildReportText)(sales, radius, tfMonths);
+    await (0, email_1.sendReportEmail)(recipientEmail, html, text, SMTP_USER.value(), SMTP_PASS.value());
     return { success: true };
 });
 /**
@@ -281,12 +303,12 @@ exports.scheduledReport = (0, scheduler_1.onSchedule)({
         zip: s.zip,
         distanceMiles: s.distanceMiles,
         saleDate: s.saleDate.toDate(),
-        price: s.price,
     }));
     // 5. Build and send email
     const html = (0, email_1.buildReportHtml)(sales, emailConfig.radiusMiles, emailConfig.timeframeMonths);
+    const text = (0, email_1.buildReportText)(sales, emailConfig.radiusMiles, emailConfig.timeframeMonths);
     try {
-        await (0, email_1.sendReportEmail)(emailConfig.recipientEmail, html, SMTP_USER.value(), SMTP_PASS.value());
+        await (0, email_1.sendReportEmail)(emailConfig.recipientEmail, html, text, SMTP_USER.value(), SMTP_PASS.value());
         console.log(`Report sent to ${emailConfig.recipientEmail} with ${sales.length} sales.`);
     }
     catch (error) {

@@ -15,21 +15,12 @@ export interface ReportSale {
   zip: string;
   distanceMiles: number;
   saleDate: Date;
-  price: number;
 }
 
 function titleCase(str: string): string {
   return str
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatCurrency(n: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(n);
 }
 
 function formatDate(d: Date): string {
@@ -53,7 +44,6 @@ export function buildReportHtml(
         <td style="padding:8px;border-bottom:1px solid #eee">${titleCase(s.address)}, ${titleCase(s.city)} ${s.zip}</td>
         <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${s.distanceMiles.toFixed(1)} mi</td>
         <td style="padding:8px;border-bottom:1px solid #eee">${formatDate(s.saleDate)}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${formatCurrency(s.price)}</td>
       </tr>`
     )
     .join("");
@@ -80,7 +70,6 @@ export function buildReportHtml(
               <th style="padding:8px;text-align:left">Address</th>
               <th style="padding:8px;text-align:right">Distance</th>
               <th style="padding:8px;text-align:left">Move Date</th>
-              <th style="padding:8px;text-align:right">Price</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -94,9 +83,38 @@ export function buildReportHtml(
   `;
 }
 
+export function buildReportText(
+  sales: ReportSale[],
+  radiusMiles: number,
+  timeframeMonths: number
+): string {
+  const timeLabel =
+    timeframeMonths === 1
+      ? "1 month"
+      : `${timeframeMonths} months`;
+
+  let text = `AFC Neighborhood Watch Report\n`;
+  text += `${"=".repeat(40)}\n\n`;
+  text += `${sales.length} new mover${sales.length !== 1 ? "s" : ""} within ${radiusMiles} miles in the last ${timeLabel}.\n\n`;
+
+  if (sales.length > 0) {
+    for (const s of sales) {
+      text += `${titleCase(s.buyer)}\n`;
+      text += `  ${titleCase(s.address)}, ${titleCase(s.city)} ${s.zip}\n`;
+      text += `  ${s.distanceMiles.toFixed(1)} mi  |  ${formatDate(s.saleDate)}\n\n`;
+    }
+  } else {
+    text += "No new movers found for this period.\n";
+  }
+
+  text += `---\nSent automatically by AFC Neighborhood Watch\n`;
+  return text;
+}
+
 export async function sendReportEmail(
   to: string,
   html: string,
+  text: string,
   smtpUser: string,
   smtpPass: string
 ): Promise<void> {
@@ -116,6 +134,7 @@ export async function sendReportEmail(
       day: "numeric",
       year: "numeric",
     })}`,
+    text,
     html,
   });
 }

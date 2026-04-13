@@ -11,7 +11,7 @@ import {
   getYearsToFetch,
 } from "./fetchSales";
 import { geocodeAddress, batchGeocode, haversineDistanceMiles } from "./geocode";
-import { buildReportHtml, sendReportEmail } from "./email";
+import { buildReportHtml, buildReportText, sendReportEmail } from "./email";
 import { ChurchConfig, ProcessResult } from "./types";
 
 admin.initializeApp();
@@ -200,22 +200,55 @@ export const geocodeAddressFn = onCall(
 
 /**
  * Send a test email — callable from the frontend.
+ * Pulls real sales data using the saved email config settings.
  */
 export const sendTestEmail = onCall(
   {
     secrets: [SMTP_USER, SMTP_PASS],
-    timeoutSeconds: 30,
+    timeoutSeconds: 60,
   },
   async (request) => {
-    const { recipientEmail } = request.data as { recipientEmail: string };
+    const { recipientEmail, timeframeMonths, radiusMiles } = request.data as {
+      recipientEmail: string;
+      timeframeMonths?: number;
+      radiusMiles?: number;
+    };
     if (!recipientEmail) {
       throw new HttpsError("invalid-argument", "Recipient email is required.");
     }
 
-    const html = buildReportHtml([], 3, 1);
+    const tfMonths = timeframeMonths ?? 1;
+    const radius = radiusMiles ?? 3;
+
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - tfMonths);
+
+    const salesSnap = await db
+      .collection("sales")
+      .where("saleDate", ">=", admin.firestore.Timestamp.fromDate(cutoffDate))
+      .orderBy("saleDate", "desc")
+      .get();
+
+    const sales = salesSnap.docs
+      .map((d) => d.data())
+      .filter(
+        (s) => s.distanceMiles != null && s.distanceMiles <= radius
+      )
+      .map((s) => ({
+        buyer: s.buyer as string,
+        address: s.address as string,
+        city: s.city as string,
+        zip: s.zip as string,
+        distanceMiles: s.distanceMiles as number,
+        saleDate: (s.saleDate as admin.firestore.Timestamp).toDate(),
+      }));
+
+    const html = buildReportHtml(sales, radius, tfMonths);
+    const text = buildReportText(sales, radius, tfMonths);
     await sendReportEmail(
       recipientEmail,
       html,
+      text,
       SMTP_USER.value(),
       SMTP_PASS.value()
     );
@@ -315,7 +348,6 @@ export const scheduledReport = onSchedule(
         zip: s.zip as string,
         distanceMiles: s.distanceMiles as number,
         saleDate: (s.saleDate as admin.firestore.Timestamp).toDate(),
-        price: s.price as number,
       }));
 
     // 5. Build and send email
@@ -325,10 +357,17 @@ export const scheduledReport = onSchedule(
       emailConfig.timeframeMonths
     );
 
+    const text = buildReportText(
+      sales,
+      emailConfig.radiusMiles,
+      emailConfig.timeframeMonths
+    );
+
     try {
       await sendReportEmail(
         emailConfig.recipientEmail,
         html,
+        text,
         SMTP_USER.value(),
         SMTP_PASS.value()
       );

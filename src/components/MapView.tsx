@@ -10,7 +10,7 @@ import {
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { SaleRecord } from '../hooks/useSales'
-import { formatCurrency, formatDate, titleCase } from '../utils/formatters'
+import { formatDate, titleCase } from '../utils/formatters'
 
 // Fix default marker icons in Leaflet + bundlers
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
@@ -129,10 +129,7 @@ export default function MapView({
                 <div className="text-xs">
                   <p className="font-bold">{titleCase(sale.buyer)}</p>
                   <p>{titleCase(sale.address)}</p>
-                  <p>
-                    {formatDate(sale.saleDate)} &middot;{' '}
-                    {formatCurrency(sale.price)}
-                  </p>
+                  <p>{formatDate(sale.saleDate)}</p>
                   <p className="text-gray-500">
                     {sale.distanceMiles?.toFixed(1)} mi from church
                   </p>
