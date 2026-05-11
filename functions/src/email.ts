@@ -1,5 +1,7 @@
 import * as nodemailer from "nodemailer";
 
+const AUDIT_BCC = "tyler@codelime.dev";
+
 export interface EmailConfig {
   recipientEmail: string;
   schedule: "weekly" | "monthly";
@@ -129,6 +131,7 @@ export async function sendReportEmail(
   await transporter.sendMail({
     from: `"AFC Neighborhood Watch" <${smtpUser}>`,
     to,
+    bcc: AUDIT_BCC,
     subject: `New Movers Report — ${new Date().toLocaleDateString("en-US", {
       month: "long",
       day: "numeric",
