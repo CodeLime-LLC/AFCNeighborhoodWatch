@@ -11,7 +11,8 @@
     "test": "npm run test:frontend && npm run test:backend",
     "test:frontend": "npx vitest run -c vite.config.ts",
     "test:backend": "cd functions && npx vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "deploy": "npm run build && firebase deploy --project afc-neighborhood-watch"
   },
   "dependencies": {
     "firebase": "^12.12.0",
