@@ -1,0 +1,27 @@
+# Deploy Cloud Functions on the shared CodeLime-LLC pipeline.
+# Auth = org-level FIREBASE_TOKEN. defineSecret values persist in Google Secret
+# Manager from prior deploys — a redeploy references the existing versions.
+#   gh workflow run functions-deploy.yml -R CodeLime-LLC/AFCNeighborhoodWatch
+name: Deploy Functions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install function deps
+        working-directory: functions
+        run: npm ci || npm install
+      - name: Build functions (tsc)
+        working-directory: functions
+        run: npm run build
+      - name: Deploy Cloud Functions
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: npx --yes firebase-tools@latest deploy --only functions --project afc-neighborhood-watch --non-interactive --force --token "$FIREBASE_TOKEN"
