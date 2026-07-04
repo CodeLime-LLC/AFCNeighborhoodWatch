@@ -1,0 +1,35 @@
+# Deploy to Firebase Hosting on the shared CodeLime-LLC pipeline.
+# Auth = ORG-level FIREBASE_TOKEN (one `firebase login:ci` token authorizes every
+# project this account owns). The target project comes from .firebaserc (default
+# alias), so this file is IDENTICAL across all CodeLime web repos — no per-repo edits.
+#
+# Deploy from anywhere: GitHub Mobile → Actions → "Deploy Hosting" → Run workflow, or
+#   gh workflow run firebase-hosting.yml -R CodeLime-LLC/<repo>
+# Also auto-deploys on push to main.
+name: Deploy Hosting
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: hosting-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install + build
+        run: |
+          npm ci || npm install
+          npm run build
+      - name: Deploy to Firebase Hosting (project from .firebaserc)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: npx --yes firebase-tools@latest deploy --only hosting --non-interactive --token "$FIREBASE_TOKEN"
