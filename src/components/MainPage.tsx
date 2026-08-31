@@ -321,8 +321,11 @@ export default function MainPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                <label className="text-sm font-medium text-gray-700">
-                  Timeframe:
+                <label
+                  className="text-sm font-medium text-gray-700"
+                  title="Only applies to the first report. After that, each report covers every mover found since the previous one."
+                >
+                  First report covers:
                 </label>
                 <select
                   value={emailTimeframe}

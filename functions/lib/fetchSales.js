@@ -6,6 +6,8 @@ exports.filterByDateAndQuality = filterByDateAndQuality;
 exports.toSaleRecords = toSaleRecords;
 exports.dedup = dedup;
 exports.getYearsToFetch = getYearsToFetch;
+exports.maxSaleDate = maxSaleDate;
+exports.parseSaleDate = parseSaleDate;
 const sync_1 = require("csv-parse/sync");
 const BASE_URL = "https://web.assess.co.polk.ia.us/info/web/exports/res/sales/juris";
 /**
@@ -17,7 +19,12 @@ async function fetchCsv(jurisdictionCode, year) {
     if (!response.ok) {
         throw new Error(`Failed to fetch CSV: ${response.status} from ${url}`);
     }
-    return response.text();
+    const header = response.headers.get("last-modified");
+    const lastModified = header ? new Date(header) : null;
+    return {
+        text: await response.text(),
+        lastModified: lastModified && !isNaN(lastModified.getTime()) ? lastModified : null,
+    };
 }
 /**
  * Parse CSV text into raw sale row objects.
@@ -52,7 +59,7 @@ function filterByDateAndQuality(rows, cutoffDate) {
     return rows.filter((row) => {
         if (row.quality1 !== "Arms Length")
             return false;
-        const saleDate = parseDate(row.sale_date);
+        const saleDate = parseSaleDate(row.sale_date);
         if (!saleDate)
             return false;
         return saleDate >= cutoffDate;
@@ -64,7 +71,7 @@ function filterByDateAndQuality(rows, cutoffDate) {
 function toSaleRecords(rows, fetchYear) {
     const results = [];
     for (const row of rows) {
-        const saleDate = parseDate(row.sale_date);
+        const saleDate = parseSaleDate(row.sale_date);
         if (!saleDate)
             continue;
         results.push({
@@ -85,6 +92,7 @@ function toSaleRecords(rows, fetchYear) {
             geocodeStatus: "no_match",
             fetchYear,
             sourceKey: `${row.book}-${row.pg}`,
+            source: "sales",
         });
     }
     return results;
@@ -111,9 +119,23 @@ function getYearsToFetch(timeframeMonths) {
     return years;
 }
 /**
+ * The most recent sale date present in the raw rows, ignoring quality and
+ * date filters. This is how fresh the county's export actually is, which is
+ * not the same as when the file was last rewritten.
+ */
+function maxSaleDate(rows) {
+    let max = null;
+    for (const row of rows) {
+        const d = parseSaleDate(row.sale_date);
+        if (d && (!max || d > max))
+            max = d;
+    }
+    return max;
+}
+/**
  * Parse date strings like "03/15/2026" or "2026-03-15".
  */
-function parseDate(dateStr) {
+function parseSaleDate(dateStr) {
     if (!dateStr)
         return null;
     // Try MM/DD/YYYY

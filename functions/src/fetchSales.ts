@@ -4,19 +4,33 @@ import { RawSaleRow, SaleRecord } from "./types";
 const BASE_URL =
   "https://web.assess.co.polk.ia.us/info/web/exports/res/sales/juris";
 
+export interface CsvFetchResult {
+  text: string;
+  /** The export file's Last-Modified header, when the server sends one. */
+  lastModified: Date | null;
+}
+
 /**
  * Fetch CSV data from Polk County Assessor for a given jurisdiction and year.
  */
 export async function fetchCsv(
   jurisdictionCode: string,
   year: number
-): Promise<string> {
+): Promise<CsvFetchResult> {
   const url = `${BASE_URL}/${jurisdictionCode}/${year}.csv`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch CSV: ${response.status} from ${url}`);
   }
-  return response.text();
+
+  const header = response.headers.get("last-modified");
+  const lastModified = header ? new Date(header) : null;
+
+  return {
+    text: await response.text(),
+    lastModified:
+      lastModified && !isNaN(lastModified.getTime()) ? lastModified : null,
+  };
 }
 
 /**
@@ -57,7 +71,7 @@ export function filterByDateAndQuality(
   return rows.filter((row) => {
     if (row.quality1 !== "Arms Length") return false;
 
-    const saleDate = parseDate(row.sale_date);
+    const saleDate = parseSaleDate(row.sale_date);
     if (!saleDate) return false;
 
     return saleDate >= cutoffDate;
@@ -73,7 +87,7 @@ export function toSaleRecords(
 ): SaleRecord[] {
   const results: SaleRecord[] = [];
   for (const row of rows) {
-    const saleDate = parseDate(row.sale_date);
+    const saleDate = parseSaleDate(row.sale_date);
     if (!saleDate) continue;
 
     results.push({
@@ -94,6 +108,7 @@ export function toSaleRecords(
       geocodeStatus: "no_match",
       fetchYear,
       sourceKey: `${row.book}-${row.pg}`,
+      source: "sales",
     });
   }
   return results;
@@ -127,9 +142,23 @@ export function getYearsToFetch(timeframeMonths: number): number[] {
 }
 
 /**
+ * The most recent sale date present in the raw rows, ignoring quality and
+ * date filters. This is how fresh the county's export actually is, which is
+ * not the same as when the file was last rewritten.
+ */
+export function maxSaleDate(rows: RawSaleRow[]): Date | null {
+  let max: Date | null = null;
+  for (const row of rows) {
+    const d = parseSaleDate(row.sale_date);
+    if (d && (!max || d > max)) max = d;
+  }
+  return max;
+}
+
+/**
  * Parse date strings like "03/15/2026" or "2026-03-15".
  */
-function parseDate(dateStr: string): Date | null {
+export function parseSaleDate(dateStr: string): Date | null {
   if (!dateStr) return null;
 
   // Try MM/DD/YYYY
