@@ -43,24 +43,43 @@ The **sales** export (`exports/res/sales/juris/<J>/<year>.csv`) stopped gaining 
 ~2026-08-03 and stopped being rewritten after **2026-08-18**, topping out at deed book **20608**
 / sale date **2026-07-28**. Four weekly reports went out empty and unexplained.
 
-**Sales did not stop.** The sibling **inventory** export
-`exports/res/inven/juris/<J>.csv` was refreshed **2026-08-23** and carries `transfer_th1`
-(date the current title holder took ownership) plus `book_th1`/`pg_th1`, full property address,
-mailing address and `occupancy`. It holds deed books **20609–20632** — 228 recordings the sales
-export never received — with transfers through **2026-08-20**. In Ankeny that is 238 transfers
-after Jul 28, of which ~81 look like real owner-occupied movers.
-
-So: never conclude "no sales happened" from the sales export alone. Cross-check
-`inven/juris/AK.csv` before believing a zero. Nothing was announced — the whole export tree was
+**Sales did not stop.** The sibling **inventory** export `exports/res/inven/juris/<J>.csv` was
+refreshed **2026-08-23** with transfers through **2026-08-20** — deed books **20609–20632**, 228
+recordings the sales export never received. Nothing was announced: the whole export tree was
 crawled and the Aug 2026 RealTalk newsletter says nothing about a data change.
 
-Caveats on the inventory export: ~20 MB per jurisdiction, no sale price, no arm's-length
-quality code, and only the **current** owner (a property sold twice recently shows just the
-latest). Useful filters: `occupancy == Single Family`, mailing address == property address,
-and excluding TRUST / LLC / ESTATE title holders.
+**Never conclude "no sales happened" from one export.** That mistake cost six weeks of movers.
 
-`runPipeline` records the sales export's newest sale date and `Last-Modified` on
-`config/church`. A report with no movers is **suppressed** when the feed is healthy, and
-carries a stalled-feed notice when it isn't. A total CSV fetch failure is logged as `error`,
-never `success` with a count of zero, and `fetchLogs` is written on every run — including
-zero-record ones, whose absence made a stalled feed look like a stopped job.
+### The fallback is implemented, not just advice
+`runPipeline` reads **both** exports every run (`fetchTransfers.ts`). They share the deed key
+`book-pg` — verified 98% overlap on arm's-length sales — so both feed one collection, one dedup
+key and one geocoding path.
+- The sales export **wins** on a shared deed: it has price and arm's-length grading the
+  inventory lacks. A deed first seen in the inventory is **upgraded in place** when the sales
+  export publishes it — but `createdAt` is never touched, since it is the report watermark and
+  moving it re-sends a mover.
+- Inventory rows are filtered to recent **owner-occupied residential** transfers: `occupancy` in
+  {Single Family, Condominium, Townhouse, Bi-attached, Duplex} — condos and townhouses are
+  movers too, an earlier Single-Family-only pass undercounted by a fifth — mailing address ==
+  property address, and title holder not an organisation.
+- Entity matching is **per whole word**, never substring: `" TRUST"` inside "TRUSTIN" and
+  `" BANK"` inside a Banks surname silently drop real households. A unit test pins this.
+- The 19 MB file is filtered inside `csv-parse` via `on_record`; materialising 27k rows of 130+
+  columns first blows the memory budget. Measured 0.8s / 26 MB heap. Functions run at **1 GiB**.
+
+Freshness of **both** exports is recorded on `config/church` (`sourceMaxSaleDate`,
+`sourceMaxTransferDate`, `sourceLastModified`), so staleness reflects the best available picture.
+A report with no movers is **suppressed** when the feed is healthy and carries a stalled-feed
+notice when it isn't. A total fetch failure logs `error`, never `success` with a count of zero,
+and `fetchLogs` is written on every run — including zero-record ones, whose absence made a
+stalled feed look like a stopped job.
+
+## Where this was left on 2026-08-31
+Shipped and deployed (hosting + functions, 7:28 AM Central). A one-off **catch-up email of 62
+movers** (Jul 30 – Aug 20) went to Debbie, and those 62 are in Firestore as `source:
+"inventory"` with doc ids `catchup_<book>_<pg>`. `config/email.lastReportAt` was seeded to
+**2026-08-31T11:51:30Z** so the weekly report resumes cleanly and cannot re-send them.
+
+Open, not urgent: nobody has told the assessor their sales export is broken — Randy Ripperger,
+Rip@assess.co.polk.ia.us, 515-286-3158. The fallback covers the gap, but only they can restore
+price and arm's-length grading.
