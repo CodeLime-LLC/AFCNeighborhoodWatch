@@ -108,6 +108,7 @@ export function toSaleRecords(
       geocodeStatus: "no_match",
       fetchYear,
       sourceKey: `${row.book}-${row.pg}`,
+      source: "sales",
     });
   }
   return results;

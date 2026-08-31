@@ -45,6 +45,22 @@ export interface SaleRecord {
   geocodeStatus: "matched" | "no_match";
   fetchYear: number;
   sourceKey: string;
+  /** Which assessor export this record came from. */
+  source: "sales" | "inventory";
+}
+
+/** A recent owner-occupied transfer lifted from the inventory export. */
+export interface TransferRow {
+  transferDate: string;
+  book: string;
+  pg: string;
+  owner: string;
+  address: string;
+  city: string;
+  zip: string;
+  occupancy: string;
+  totalLivingArea: string;
+  yearBuilt: string;
 }
 
 export interface GeocodeResult {

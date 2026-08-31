@@ -7,10 +7,14 @@ import {
   parseCsv,
   filterByDateAndQuality,
   toSaleRecords,
-  dedup,
   getYearsToFetch,
   maxSaleDate,
 } from "./fetchSales";
+import {
+  fetchInventoryCsv,
+  parseTransfers,
+  toSaleRecordsFromTransfers,
+} from "./fetchTransfers";
 import { geocodeAddress, batchGeocode, haversineDistanceMiles } from "./geocode";
 import {
   buildReportHtml,
@@ -22,13 +26,15 @@ import {
   ReportSale,
   SourceStatus,
 } from "./email";
-import { ChurchConfig, ProcessResult } from "./types";
+import { ChurchConfig, ProcessResult, SaleRecord } from "./types";
 
 admin.initializeApp();
 const db = admin.firestore();
 
 const SMTP_USER = defineSecret("SMTP_USER");
 const SMTP_PASS = defineSecret("SMTP_PASS");
+
+const BATCH_SIZE = 500;
 
 const CHURCH_LAT = 41.7322;
 const CHURCH_LON = -93.6295;
@@ -37,9 +43,16 @@ const CHURCH_LON = -93.6295;
 async function readSourceStatus(): Promise<SourceStatus> {
   const snap = await db.doc("config/church").get();
   const data = snap.data() ?? {};
-  const newestSaleDate =
+  const salesMax =
     (data.sourceMaxSaleDate as admin.firestore.Timestamp | null)?.toDate() ??
     null;
+  const transferMax =
+    (data.sourceMaxTransferDate as admin.firestore.Timestamp | null)?.toDate() ??
+    null;
+  const newestSaleDate =
+    salesMax && transferMax
+      ? new Date(Math.max(salesMax.getTime(), transferMax.getTime()))
+      : salesMax ?? transferMax;
   const lastUpdated =
     (data.sourceLastModified as admin.firestore.Timestamp | null)?.toDate() ??
     null;
@@ -151,31 +164,107 @@ async function runPipeline(
     );
   }
 
-  // How fresh the export is, independent of what survives our filters.
+  // How fresh the sales export is, independent of what survives our filters.
   const sourceMaxSaleDate = maxSaleDate(allRows);
+
+  // 4. Filter by date and quality
+  const filtered = filterByDateAndQuality(allRows, cutoffDate);
+  const salesRecords = toSaleRecords(filtered, years[0]);
+  console.log(`Filtered to ${filtered.length} arm's-length sales, ${salesRecords.length} records`);
+
+  // 4b. Fall back to the inventory export. The sales export stalled through
+  //     August 2026 while this one stayed current, and reading only the former
+  //     made a broken feed look like a month with no sales at all.
+  let inventoryRecords: SaleRecord[] = [];
+  let sourceMaxTransferDate: Date | null = null;
+  try {
+    const inventory = await fetchInventoryCsv(config.jurisdictionCode);
+    const { rows: transfers, newestTransfer } = parseTransfers(
+      inventory.text,
+      cutoffDate
+    );
+    sourceMaxTransferDate = newestTransfer;
+    inventoryRecords = toSaleRecordsFromTransfers(transfers, years[0], "ANKENY");
+    console.log(
+      `Inventory: newest transfer ${newestTransfer?.toISOString().slice(0, 10) ?? "none"}, ` +
+        `${transfers.length} recent owner-occupied residential transfers`
+    );
+  } catch (error) {
+    console.warn("Inventory export unavailable:", error);
+  }
+
+  // 4c. Freshness of BOTH exports, so a stalled sales file is distinguishable
+  //     from a genuinely quiet stretch.
   const sourceFields = {
     sourceMaxSaleDate: sourceMaxSaleDate
       ? admin.firestore.Timestamp.fromDate(sourceMaxSaleDate)
+      : null,
+    sourceMaxTransferDate: sourceMaxTransferDate
+      ? admin.firestore.Timestamp.fromDate(sourceMaxTransferDate)
       : null,
     sourceLastModified: sourceLastModified
       ? admin.firestore.Timestamp.fromDate(sourceLastModified)
       : null,
   };
   console.log(
-    `Source freshness: newest sale ${sourceMaxSaleDate?.toISOString().slice(0, 10) ?? "none"}, ` +
-      `file modified ${sourceLastModified?.toISOString() ?? "unknown"}`
+    `Freshness: sales export newest sale ` +
+      `${sourceMaxSaleDate?.toISOString().slice(0, 10) ?? "none"} ` +
+      `(file modified ${sourceLastModified?.toISOString() ?? "unknown"}); ` +
+      `inventory newest transfer ` +
+      `${sourceMaxTransferDate?.toISOString().slice(0, 10) ?? "none"}`
   );
 
-  // 4. Filter by date and quality
-  const filtered = filterByDateAndQuality(allRows, cutoffDate);
-  const records = toSaleRecords(filtered, years[0]);
-  console.log(`Filtered to ${filtered.length} arm's-length sales, ${records.length} records`);
+  // 4d. One deed can appear in both exports. The sales export wins: it carries
+  //     price and the arm's-length grading the inventory has no field for.
+  const merged = new Map<string, SaleRecord>();
+  for (const r of inventoryRecords) merged.set(r.sourceKey, r);
+  for (const r of salesRecords) merged.set(r.sourceKey, r);
+  const records = [...merged.values()];
 
   // 5. Dedup against existing records
-  const existingSnap = await db.collection("sales").select("sourceKey").get();
-  const existingKeys = new Set(existingSnap.docs.map((d) => d.data().sourceKey as string));
-  const newRecords = dedup(records, existingKeys);
-  console.log(`${newRecords.length} new records after dedup (${existingKeys.size} existing)`);
+  const existingSnap = await db
+    .collection("sales")
+    .select("sourceKey", "source")
+    .get();
+  const existing = new Map<string, { id: string; source: string }>();
+  for (const doc of existingSnap.docs) {
+    const key = doc.data().sourceKey as string;
+    if (key) {
+      existing.set(key, {
+        id: doc.id,
+        source: (doc.data().source as string) ?? "sales",
+      });
+    }
+  }
+  const newRecords = records.filter((r) => !existing.has(r.sourceKey));
+  console.log(`${newRecords.length} new records after dedup (${existing.size} existing)`);
+
+  // 5b. A deed first seen in the inventory, now published in the sales export,
+  //     is upgraded in place. createdAt is deliberately untouched: it is the
+  //     report watermark, and moving it would re-send a mover already emailed.
+  const upgrades = records.filter(
+    (r) => r.source === "sales" && existing.get(r.sourceKey)?.source === "inventory"
+  );
+  for (let i = 0; i < upgrades.length; i += BATCH_SIZE) {
+    const batch = db.batch();
+    for (const r of upgrades.slice(i, i + BATCH_SIZE)) {
+      batch.update(db.collection("sales").doc(existing.get(r.sourceKey)!.id), {
+        source: "sales",
+        quality1: r.quality1,
+        price: r.price,
+        buyer: r.buyer,
+        seller: r.seller,
+        saleDate: admin.firestore.Timestamp.fromDate(r.saleDate),
+        residenceType: r.residenceType,
+        totalLivingArea: r.totalLivingArea,
+        yearBuilt: r.yearBuilt,
+      });
+    }
+    await batch.commit();
+  }
+  if (upgrades.length > 0) {
+    console.log(`Upgraded ${upgrades.length} inventory records with sales-export detail`);
+  }
 
   if (newRecords.length === 0) {
     console.log("No new records to process");
@@ -227,7 +316,6 @@ async function runPipeline(
   console.log(`Geocoded: ${geocodeResults.size} matched, ${errors} failed`);
 
   // 7. Write to Firestore in batches (max 500 per batch)
-  const BATCH_SIZE = 500;
   for (let i = 0; i < newRecords.length; i += BATCH_SIZE) {
     const batch = db.batch();
     const chunk = newRecords.slice(i, i + BATCH_SIZE);
@@ -295,7 +383,7 @@ async function runPipeline(
 export const processSales = onCall(
   {
     timeoutSeconds: 540,
-    memory: "512MiB",
+    memory: "1GiB",
   },
   async () => {
     return runPipeline("manual");
@@ -384,7 +472,7 @@ export const scheduledReport = onSchedule(
     schedule: "0 6 * * *",
     timeZone: "America/Chicago",
     timeoutSeconds: 540,
-    memory: "512MiB",
+    memory: "1GiB",
     secrets: [SMTP_USER, SMTP_PASS],
   },
   async () => {
