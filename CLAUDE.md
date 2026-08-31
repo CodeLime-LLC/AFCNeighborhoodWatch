@@ -38,10 +38,29 @@ window. Details that matter:
 - The watermark advances **only after a confirmed send**, so a failed delivery re-reports.
 - `config/email.timeframeMonths` now only sets the **first** report's lookback.
 
-## The county feed stalls — say so, never send a silent zero
-The export froze on **2026-08-18** with nothing newer than **2026-07-28**, and four weekly
-reports went out empty and unexplained. `runPipeline` now records the export's newest sale date
-and `Last-Modified` on `config/church`. A report with no movers is **suppressed** when the feed
-is healthy, and carries a stalled-feed notice when it isn't. A total CSV fetch failure is logged
-as `error`, never `success` with a count of zero, and `fetchLogs` is written on every run —
-including zero-record ones, whose absence made a stalled feed look like a stopped job.
+## The SALES export stalls — but the county has not (2026-08-31)
+The **sales** export (`exports/res/sales/juris/<J>/<year>.csv`) stopped gaining content after
+~2026-08-03 and stopped being rewritten after **2026-08-18**, topping out at deed book **20608**
+/ sale date **2026-07-28**. Four weekly reports went out empty and unexplained.
+
+**Sales did not stop.** The sibling **inventory** export
+`exports/res/inven/juris/<J>.csv` was refreshed **2026-08-23** and carries `transfer_th1`
+(date the current title holder took ownership) plus `book_th1`/`pg_th1`, full property address,
+mailing address and `occupancy`. It holds deed books **20609–20632** — 228 recordings the sales
+export never received — with transfers through **2026-08-20**. In Ankeny that is 238 transfers
+after Jul 28, of which ~81 look like real owner-occupied movers.
+
+So: never conclude "no sales happened" from the sales export alone. Cross-check
+`inven/juris/AK.csv` before believing a zero. Nothing was announced — the whole export tree was
+crawled and the Aug 2026 RealTalk newsletter says nothing about a data change.
+
+Caveats on the inventory export: ~20 MB per jurisdiction, no sale price, no arm's-length
+quality code, and only the **current** owner (a property sold twice recently shows just the
+latest). Useful filters: `occupancy == Single Family`, mailing address == property address,
+and excluding TRUST / LLC / ESTATE title holders.
+
+`runPipeline` records the sales export's newest sale date and `Last-Modified` on
+`config/church`. A report with no movers is **suppressed** when the feed is healthy, and
+carries a stalled-feed notice when it isn't. A total CSV fetch failure is logged as `error`,
+never `success` with a count of zero, and `fetchLogs` is written on every run — including
+zero-record ones, whose absence made a stalled feed look like a stopped job.
