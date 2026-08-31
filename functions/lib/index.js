@@ -47,12 +47,55 @@ const SMTP_USER = (0, params_1.defineSecret)("SMTP_USER");
 const SMTP_PASS = (0, params_1.defineSecret)("SMTP_PASS");
 const CHURCH_LAT = 41.7322;
 const CHURCH_LON = -93.6295;
+/** Reads how fresh the county export was as of the last pipeline run. */
+async function readSourceStatus() {
+    const snap = await db.doc("config/church").get();
+    const data = snap.data() ?? {};
+    const newestSaleDate = data.sourceMaxSaleDate?.toDate() ??
+        null;
+    const lastUpdated = data.sourceLastModified?.toDate() ??
+        null;
+    return {
+        newestSaleDate,
+        lastUpdated,
+        stale: (0, email_1.isSourceStale)(newestSaleDate),
+    };
+}
+/**
+ * Movers first ingested in (watermark, runAt]. Bounding both ends means a
+ * record written while the query runs is neither reported twice nor skipped.
+ */
+async function moversSince(watermark, runAt, radiusMiles) {
+    const snap = await db
+        .collection("sales")
+        .where("createdAt", ">", admin.firestore.Timestamp.fromDate(watermark))
+        .where("createdAt", "<=", admin.firestore.Timestamp.fromDate(runAt))
+        .orderBy("createdAt", "asc")
+        .get();
+    return snap.docs
+        .map((d) => d.data())
+        .filter((s) => s.distanceMiles != null && s.distanceMiles <= radiusMiles)
+        .map((s) => ({
+        buyer: s.buyer,
+        address: s.address,
+        city: s.city,
+        zip: s.zip,
+        distanceMiles: s.distanceMiles,
+        saleDate: s.saleDate.toDate(),
+    }))
+        .sort((a, b) => b.saleDate.getTime() - a.saleDate.getTime());
+}
+function monthsBefore(d, months) {
+    const out = new Date(d);
+    out.setMonth(out.getMonth() - months);
+    return out;
+}
 /**
  * Core pipeline: fetch CSV, parse, geocode, store.
  * Used by both manual trigger and scheduled function.
  */
-async function runPipeline() {
-    console.log("Pipeline started");
+async function runPipeline(trigger) {
+    console.log(`Pipeline started (${trigger})`);
     // 1. Load church config
     const configSnap = await db.doc("config/church").get();
     if (!configSnap.exists) {
@@ -66,18 +109,55 @@ async function runPipeline() {
     console.log(`Fetching years: ${years.join(", ")}, cutoff: ${cutoffDate.toISOString()}`);
     // 3. Fetch and parse CSVs
     let allRows = [];
+    let yearsFetched = 0;
+    let sourceLastModified = null;
     for (const year of years) {
         try {
             console.log(`Fetching CSV for year ${year}...`);
-            const csv = await (0, fetchSales_1.fetchCsv)(config.jurisdictionCode, year);
-            const rows = (0, fetchSales_1.parseCsv)(csv);
+            const { text, lastModified } = await (0, fetchSales_1.fetchCsv)(config.jurisdictionCode, year);
+            const rows = (0, fetchSales_1.parseCsv)(text);
             console.log(`Year ${year}: ${rows.length} rows parsed`);
             allRows = allRows.concat(rows);
+            yearsFetched++;
+            if (lastModified && (!sourceLastModified || lastModified > sourceLastModified)) {
+                sourceLastModified = lastModified;
+            }
         }
         catch (error) {
             console.warn(`Failed to fetch CSV for year ${year}:`, error);
         }
     }
+    // A source outage must never be recorded as a successful, empty run — that
+    // is indistinguishable from "no new sales" and is how a stalled feed hides.
+    if (yearsFetched === 0) {
+        await db.doc("config/church").update({
+            lastFetchDate: admin.firestore.FieldValue.serverTimestamp(),
+            lastFetchStatus: "error",
+            lastFetchCount: 0,
+        });
+        await db.collection("fetchLogs").add({
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            trigger,
+            status: "error",
+            totalRecords: 0,
+            armsLengthRecords: 0,
+            newRecordsAdded: 0,
+            geocodeFailures: 0,
+        });
+        throw new https_1.HttpsError("unavailable", "Could not fetch any data from the Polk County Assessor.");
+    }
+    // How fresh the export is, independent of what survives our filters.
+    const sourceMaxSaleDate = (0, fetchSales_1.maxSaleDate)(allRows);
+    const sourceFields = {
+        sourceMaxSaleDate: sourceMaxSaleDate
+            ? admin.firestore.Timestamp.fromDate(sourceMaxSaleDate)
+            : null,
+        sourceLastModified: sourceLastModified
+            ? admin.firestore.Timestamp.fromDate(sourceLastModified)
+            : null,
+    };
+    console.log(`Source freshness: newest sale ${sourceMaxSaleDate?.toISOString().slice(0, 10) ?? "none"}, ` +
+        `file modified ${sourceLastModified?.toISOString() ?? "unknown"}`);
     // 4. Filter by date and quality
     const filtered = (0, fetchSales_1.filterByDateAndQuality)(allRows, cutoffDate);
     const records = (0, fetchSales_1.toSaleRecords)(filtered, years[0]);
@@ -93,6 +173,18 @@ async function runPipeline() {
             lastFetchDate: admin.firestore.FieldValue.serverTimestamp(),
             lastFetchStatus: "success",
             lastFetchCount: 0,
+            ...sourceFields,
+        });
+        // Logged even when nothing changed, so a run of empty weeks is visible
+        // in fetchLogs rather than looking like the job stopped running.
+        await db.collection("fetchLogs").add({
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            trigger,
+            status: "success",
+            totalRecords: allRows.length,
+            armsLengthRecords: filtered.length,
+            newRecordsAdded: 0,
+            geocodeFailures: 0,
         });
         return { newRecords: 0, totalInRadius: 0, errors: 0 };
     }
@@ -149,11 +241,13 @@ async function runPipeline() {
         lastFetchDate: admin.firestore.FieldValue.serverTimestamp(),
         lastFetchStatus: "success",
         lastFetchCount: newRecords.length,
+        ...sourceFields,
     });
     // 10. Log the fetch
     await db.collection("fetchLogs").add({
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        trigger: "manual",
+        trigger,
+        status: "success",
         totalRecords: allRows.length,
         armsLengthRecords: filtered.length,
         newRecordsAdded: newRecords.length,
@@ -177,7 +271,7 @@ exports.processSales = (0, https_1.onCall)({
     timeoutSeconds: 540,
     memory: "512MiB",
 }, async () => {
-    return runPipeline();
+    return runPipeline("manual");
 });
 /**
  * Geocode a single address — used by the settings page.
@@ -205,29 +299,22 @@ exports.sendTestEmail = (0, https_1.onCall)({
     if (!recipientEmail) {
         throw new https_1.HttpsError("invalid-argument", "Recipient email is required.");
     }
-    const tfMonths = timeframeMonths ?? 1;
     const radius = radiusMiles ?? 3;
-    const cutoffDate = new Date();
-    cutoffDate.setMonth(cutoffDate.getMonth() - tfMonths);
-    const salesSnap = await db
-        .collection("sales")
-        .where("saleDate", ">=", admin.firestore.Timestamp.fromDate(cutoffDate))
-        .orderBy("saleDate", "desc")
-        .get();
-    const sales = salesSnap.docs
-        .map((d) => d.data())
-        .filter((s) => s.distanceMiles != null && s.distanceMiles <= radius)
-        .map((s) => ({
-        buyer: s.buyer,
-        address: s.address,
-        city: s.city,
-        zip: s.zip,
-        distanceMiles: s.distanceMiles,
-        saleDate: s.saleDate.toDate(),
-    }));
-    const html = (0, email_1.buildReportHtml)(sales, radius, tfMonths);
-    const text = (0, email_1.buildReportText)(sales, radius, tfMonths);
-    await (0, email_1.sendReportEmail)(recipientEmail, html, text, SMTP_USER.value(), SMTP_PASS.value());
+    const lookbackMonths = timeframeMonths ?? 1;
+    // Preview exactly what the next real report would contain, without
+    // consuming the watermark — a test send must not skip a live report.
+    const emailSnap = await db.doc("config/email").get();
+    const storedWatermark = emailSnap.data()?.lastReportAt
+        ?.toDate() ?? null;
+    const runAt = new Date();
+    const watermark = storedWatermark ?? monthsBefore(runAt, lookbackMonths);
+    const sales = await moversSince(watermark, runAt, radius);
+    const ctx = {
+        radiusMiles: radius,
+        since: storedWatermark,
+        source: await readSourceStatus(),
+    };
+    await (0, email_1.sendReportEmail)(recipientEmail, (0, email_1.buildReportHtml)(sales, ctx), (0, email_1.buildReportText)(sales, ctx), SMTP_USER.value(), SMTP_PASS.value(), (0, email_1.buildReportSubject)(sales, ctx));
     return { success: true };
 });
 /**
@@ -279,37 +366,44 @@ exports.scheduledReport = (0, scheduler_1.onSchedule)({
     console.log(`Schedule matched (${emailConfig.schedule}), running pipeline and sending report.`);
     // 3. Run the data pipeline
     try {
-        await runPipeline();
+        await runPipeline("scheduled");
     }
     catch (error) {
         console.error("Pipeline failed during scheduled report:", error);
     }
-    // 4. Query sales for the report
-    const cutoffDate = new Date();
-    cutoffDate.setMonth(cutoffDate.getMonth() - emailConfig.timeframeMonths);
-    const salesSnap = await db
-        .collection("sales")
-        .where("saleDate", ">=", admin.firestore.Timestamp.fromDate(cutoffDate))
-        .orderBy("saleDate", "desc")
-        .get();
-    const sales = salesSnap.docs
-        .map((d) => d.data())
-        .filter((s) => s.distanceMiles != null &&
-        s.distanceMiles <= emailConfig.radiusMiles)
-        .map((s) => ({
-        buyer: s.buyer,
-        address: s.address,
-        city: s.city,
-        zip: s.zip,
-        distanceMiles: s.distanceMiles,
-        saleDate: s.saleDate.toDate(),
-    }));
-    // 5. Build and send email
-    const html = (0, email_1.buildReportHtml)(sales, emailConfig.radiusMiles, emailConfig.timeframeMonths);
-    const text = (0, email_1.buildReportText)(sales, emailConfig.radiusMiles, emailConfig.timeframeMonths);
+    // 4. Movers are selected by when we DISCOVERED them, not by sale date.
+    //    The county publishes weeks late, so a sale-date window drops anyone
+    //    published after it has moved on. A watermark cannot lose them.
+    const storedWatermark = emailConfig.lastReportAt?.toDate() ?? null;
+    const runAt = new Date();
+    const watermark = storedWatermark ?? monthsBefore(runAt, emailConfig.timeframeMonths);
+    const sales = await moversSince(watermark, runAt, emailConfig.radiusMiles);
+    const source = await readSourceStatus();
+    console.log(`${sales.length} new movers since ${watermark.toISOString()}; ` +
+        `source stale: ${source.stale}`);
+    // 5. A healthy feed with nothing new is not worth an email. A stalled
+    //    feed is — silence there would look identical to a quiet week.
+    if (sales.length === 0 && !source.stale) {
+        console.log("No new movers and the county feed is current — no email sent.");
+        await db.doc("config/email").update({
+            lastReportAt: admin.firestore.Timestamp.fromDate(runAt),
+        });
+        return;
+    }
+    // 6. Build and send
+    const ctx = {
+        radiusMiles: emailConfig.radiusMiles,
+        since: storedWatermark,
+        source,
+    };
     try {
-        await (0, email_1.sendReportEmail)(emailConfig.recipientEmail, html, text, SMTP_USER.value(), SMTP_PASS.value());
+        await (0, email_1.sendReportEmail)(emailConfig.recipientEmail, (0, email_1.buildReportHtml)(sales, ctx), (0, email_1.buildReportText)(sales, ctx), SMTP_USER.value(), SMTP_PASS.value(), (0, email_1.buildReportSubject)(sales, ctx));
         console.log(`Report sent to ${emailConfig.recipientEmail} with ${sales.length} sales.`);
+        // Advanced only after a confirmed send, so a failed delivery re-reports
+        // these movers next week instead of dropping them.
+        await db.doc("config/email").update({
+            lastReportAt: admin.firestore.Timestamp.fromDate(runAt),
+        });
     }
     catch (error) {
         console.error("Failed to send report email:", error);
