@@ -66,12 +66,37 @@ for p in ["/info/web/exports/res/sales/juris/AK/2026.csv",
     st, h, _ = get(HOST + p, "HEAD")
     print(f"  {p}: {st} lm={h.get('Last-Modified')} len={h.get('Content-Length')}")
 
-print("=" * 70, "\nDIRECTORY CRAWL")
-for root in ["/info/web/", "/info/web/exports/"]:
-    listing(HOST + root)
-
-print("=" * 70, "\nCONTENT")
-profile(HOST + "/info/web/exports/res/sales/juris/AK/2026.csv", ["sale_date"], "book")
-profile(HOST + "/info/web/exports/res/inven/juris/AK.csv", ["transfer_th1"], "book_th1")
-# Is it Ankeny-only or the whole county? Des Moines is the biggest jurisdiction.
-profile(HOST + "/info/web/exports/res/inven/juris/DM.csv", ["transfer_th1"], "book_th1")
+print("=" * 70, "\nEXPORTS TREE (every file, newest first)")
+entries = []
+def walk(url, depth=0):
+    if depth > 6: return
+    st, h, body = get(url)
+    if st != 200:
+        print(f"  {url}: {st}"); return
+    text = body.decode("utf-8", "replace")
+    for m in re.finditer(r'href="([^"?/][^"]*)".*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s+(\S+)', text, re.I | re.S):
+        href, when, size = m.groups()
+        nxt = urllib.parse.urljoin(url, href)
+        if not nxt.startswith(url): continue
+        if href.endswith("/"):
+            walk(nxt, depth + 1)
+        else:
+            entries.append((when, size, nxt[len(HOST):]))
+walk(HOST + "/info/web/exports/")
+entries.sort(reverse=True)
+print(f"  {len(entries)} files")
+for when, size, path in entries[:60]:
+    print(f"  {when}  {size:>6}  {path}")
+# Any file that is NOT one of the familiar per-juris names
+odd = [e for e in entries if not re.search(r"/juris/[A-Z]{2}(/\d{4})?\.csv$", e[2])]
+print(f"\n  non-standard paths ({len(odd)}):")
+for when, size, path in odd[:80]:
+    print(f"  {when}  {size:>6}  {path}")
+# Newest file per top-level folder
+tops = {}
+for when, size, path in entries:
+    key = "/".join(path.split("/")[:6])
+    tops.setdefault(key, (when, path))
+print("\n  newest file per folder:")
+for k, (when, path) in sorted(tops.items(), key=lambda kv: kv[1][0], reverse=True):
+    print(f"  {when}  {path}")
