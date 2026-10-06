@@ -1,0 +1,12 @@
+# Throwaway diagnostic: runs only on diag/* branches. Delete with the branch.
+name: Diag county exports
+on:
+  push:
+    branches: ["diag/**"]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/diag/probe.py
