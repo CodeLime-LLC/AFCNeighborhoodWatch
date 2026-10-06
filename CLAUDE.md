@@ -86,7 +86,7 @@ The inventory fallback stalled too. A crawl of all 2,064 files under `/info/web/
 **nothing newer than Sep 6, 2026 7:22 AM Central**, and no renamed or new paths:
 - every **sales** export (res/comm/ag, per-juris and `polk/`) last written **Aug 18 ~6 PM Central**
 - every **inventory** export (res/comm/ag, per-juris and `POLKCOUNTY.csv`) last written
-  **Sep 6 ~7:10–7:22 AM Central**; newest transfer **Sep 3**, AK deed book **20648**, DM shows the same cutoff
+  **Sep 6 ~7:00–7:22 AM Central**; newest transfer **Sep 3**, AK deed book **20648**, DM shows the same cutoff
 
 So it is county-wide, not Ankeny and not our parser. No other public file fills the gap. The
 user **emailed Randy Ripperger on 2026-10-06** (Rip@assess.co.polk.ia.us, 515-286-3158) —
