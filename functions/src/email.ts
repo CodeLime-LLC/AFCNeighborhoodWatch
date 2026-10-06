@@ -23,7 +23,7 @@ export interface ReportSale {
 export interface SourceStatus {
   /** Newest sale date present in the county export, whatever its age. */
   newestSaleDate: Date | null;
-  /** Last-Modified of the export file, when the server reported one. */
+  /** Newest Last-Modified across the export files the server reported. */
   lastUpdated: Date | null;
   stale: boolean;
 }
@@ -45,6 +45,41 @@ export function isSourceStale(
     Math.floor((now.getTime() - newestSaleDate.getTime()) / 86_400_000) >
     STALE_AFTER_DAYS
   );
+}
+
+function newest(...dates: (Date | null | undefined)[]): Date | null {
+  let best: Date | null = null;
+  for (const d of dates) if (d && (!best || d > best)) best = d;
+  return best;
+}
+
+/**
+ * Freshness across BOTH county exports. The newest date and the refresh time
+ * must describe the same picture: pairing the inventory's newest transfer
+ * with the stalled sales file's Last-Modified told readers the county last
+ * refreshed weeks before a sale it had plainly already published.
+ */
+export function sourceStatusFrom(
+  exports: {
+    salesMaxSaleDate: Date | null;
+    inventoryMaxTransferDate: Date | null;
+    salesLastModified: Date | null;
+    inventoryLastModified: Date | null;
+  },
+  now: Date = new Date()
+): SourceStatus {
+  const newestSaleDate = newest(
+    exports.salesMaxSaleDate,
+    exports.inventoryMaxTransferDate
+  );
+  return {
+    newestSaleDate,
+    lastUpdated: newest(
+      exports.salesLastModified,
+      exports.inventoryLastModified
+    ),
+    stale: isSourceStale(newestSaleDate, now),
+  };
 }
 
 export interface ReportContext {

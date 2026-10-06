@@ -21,7 +21,7 @@ import {
   buildReportText,
   buildReportSubject,
   sendReportEmail,
-  isSourceStale,
+  sourceStatusFrom,
   ReportContext,
   ReportSale,
   SourceStatus,
@@ -43,24 +43,15 @@ const CHURCH_LON = -93.6295;
 async function readSourceStatus(): Promise<SourceStatus> {
   const snap = await db.doc("config/church").get();
   const data = snap.data() ?? {};
-  const salesMax =
-    (data.sourceMaxSaleDate as admin.firestore.Timestamp | null)?.toDate() ??
+  const date = (field: string) =>
+    (data[field] as admin.firestore.Timestamp | null | undefined)?.toDate() ??
     null;
-  const transferMax =
-    (data.sourceMaxTransferDate as admin.firestore.Timestamp | null)?.toDate() ??
-    null;
-  const newestSaleDate =
-    salesMax && transferMax
-      ? new Date(Math.max(salesMax.getTime(), transferMax.getTime()))
-      : salesMax ?? transferMax;
-  const lastUpdated =
-    (data.sourceLastModified as admin.firestore.Timestamp | null)?.toDate() ??
-    null;
-  return {
-    newestSaleDate,
-    lastUpdated,
-    stale: isSourceStale(newestSaleDate),
-  };
+  return sourceStatusFrom({
+    salesMaxSaleDate: date("sourceMaxSaleDate"),
+    inventoryMaxTransferDate: date("sourceMaxTransferDate"),
+    salesLastModified: date("sourceLastModified"),
+    inventoryLastModified: date("sourceInventoryLastModified"),
+  });
 }
 
 /**
@@ -177,6 +168,7 @@ async function runPipeline(
   //     made a broken feed look like a month with no sales at all.
   let inventoryRecords: SaleRecord[] = [];
   let sourceMaxTransferDate: Date | null = null;
+  let sourceInventoryLastModified: Date | null = null;
   try {
     const inventory = await fetchInventoryCsv(config.jurisdictionCode);
     const { rows: transfers, newestTransfer } = parseTransfers(
@@ -184,6 +176,7 @@ async function runPipeline(
       cutoffDate
     );
     sourceMaxTransferDate = newestTransfer;
+    sourceInventoryLastModified = inventory.lastModified;
     inventoryRecords = toSaleRecordsFromTransfers(transfers, years[0], "ANKENY");
     console.log(
       `Inventory: newest transfer ${newestTransfer?.toISOString().slice(0, 10) ?? "none"}, ` +
@@ -205,13 +198,17 @@ async function runPipeline(
     sourceLastModified: sourceLastModified
       ? admin.firestore.Timestamp.fromDate(sourceLastModified)
       : null,
+    sourceInventoryLastModified: sourceInventoryLastModified
+      ? admin.firestore.Timestamp.fromDate(sourceInventoryLastModified)
+      : null,
   };
   console.log(
     `Freshness: sales export newest sale ` +
       `${sourceMaxSaleDate?.toISOString().slice(0, 10) ?? "none"} ` +
       `(file modified ${sourceLastModified?.toISOString() ?? "unknown"}); ` +
       `inventory newest transfer ` +
-      `${sourceMaxTransferDate?.toISOString().slice(0, 10) ?? "none"}`
+      `${sourceMaxTransferDate?.toISOString().slice(0, 10) ?? "none"} ` +
+      `(file modified ${sourceInventoryLastModified?.toISOString() ?? "unknown"})`
   );
 
   // 4d. One deed can appear in both exports. The sales export wins: it carries

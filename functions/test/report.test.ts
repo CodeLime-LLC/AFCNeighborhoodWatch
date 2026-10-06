@@ -4,6 +4,7 @@ import {
   buildReportText,
   buildReportSubject,
   isSourceStale,
+  sourceStatusFrom,
   STALE_AFTER_DAYS,
   ReportContext,
   ReportSale,
@@ -151,5 +152,52 @@ describe("buildReportSubject", () => {
     }));
     expect(s).not.toContain("county data delayed");
     expect(s).toContain("New Movers Report");
+  });
+});
+
+describe("sourceStatusFrom", () => {
+  const now = new Date("2026-10-06T14:00:00Z");
+
+  it("pairs the newest date with the refresh of the export that is still moving", () => {
+    // The Oct 2026 notice: inventory transfer Sep 3, sales file stuck at Aug 18.
+    const status = sourceStatusFrom(
+      {
+        salesMaxSaleDate: new Date("2026-07-28T00:00:00Z"),
+        inventoryMaxTransferDate: new Date("2026-09-03T00:00:00Z"),
+        salesLastModified: new Date("2026-08-18T12:00:00Z"),
+        inventoryLastModified: new Date("2026-09-06T12:00:00Z"),
+      },
+      now
+    );
+    expect(status.newestSaleDate).toEqual(new Date("2026-09-03T00:00:00Z"));
+    expect(status.lastUpdated).toEqual(new Date("2026-09-06T12:00:00Z"));
+    expect(status.stale).toBe(true);
+  });
+
+  it("falls back to whichever export reported a refresh", () => {
+    const status = sourceStatusFrom(
+      {
+        salesMaxSaleDate: null,
+        inventoryMaxTransferDate: new Date("2026-10-01T00:00:00Z"),
+        salesLastModified: new Date("2026-08-18T12:00:00Z"),
+        inventoryLastModified: null,
+      },
+      now
+    );
+    expect(status.lastUpdated).toEqual(new Date("2026-08-18T12:00:00Z"));
+    expect(status.stale).toBe(false);
+  });
+
+  it("is stale with nothing at all", () => {
+    const status = sourceStatusFrom(
+      {
+        salesMaxSaleDate: null,
+        inventoryMaxTransferDate: null,
+        salesLastModified: null,
+        inventoryLastModified: null,
+      },
+      now
+    );
+    expect(status).toEqual({ newestSaleDate: null, lastUpdated: null, stale: true });
   });
 });
