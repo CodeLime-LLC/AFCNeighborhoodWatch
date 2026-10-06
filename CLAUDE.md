@@ -80,6 +80,20 @@ movers** (Jul 30 – Aug 20) went to Debbie, and those 62 are in Firestore as `s
 "inventory"` with doc ids `catchup_<book>_<pg>`. `config/email.lastReportAt` was seeded to
 **2026-08-31T11:51:30Z** so the weekly report resumes cleanly and cannot re-send them.
 
-Open, not urgent: nobody has told the assessor their sales export is broken — Randy Ripperger,
-Rip@assess.co.polk.ia.us, 515-286-3158. The fallback covers the gap, but only they can restore
-price and arm's-length grading.
+## The whole export tree froze — assessor contacted (2026-10-06)
+The inventory fallback stalled too. A crawl of all 2,064 files under `/info/web/exports/`
+(run from a GitHub runner, since the county host is blocked in the cloud container) found
+**nothing newer than Sep 6, 2026 7:22 AM Central**, and no renamed or new paths:
+- every **sales** export (res/comm/ag, per-juris and `polk/`) last written **Aug 18 ~6 PM Central**
+- every **inventory** export (res/comm/ag, per-juris and `POLKCOUNTY.csv`) last written
+  **Sep 6 ~7:10–7:22 AM Central**; newest transfer **Sep 3**, AK deed book **20648**, DM shows the same cutoff
+
+So it is county-wide, not Ankeny and not our parser. No other public file fills the gap. The
+user **emailed Randy Ripperger on 2026-10-06** (Rip@assess.co.polk.ia.us, 515-286-3158) —
+don't re-report it; wait for the reply. When the exports resume, the discovery watermark picks
+up the backlog with no manual catch-up needed.
+
+The stale notice used to pair the inventory's newest transfer with the *sales* file's
+Last-Modified ("last refreshed Aug 18" beside a Sep 3 sale). Fixed: the inventory's
+Last-Modified is now stored as `config/church.sourceInventoryLastModified` and the notice
+reports the newest refresh across both (`sourceStatusFrom` in `email.ts`).
